@@ -30,7 +30,7 @@ export default function LoginPage() {
       const data = await res.json();
       // Store user info in context
       login(data.user);
-      router.push("/note");
+      router.push("/notes");
     } catch (err) {
       setError("Network error");
       setLoading(false);
