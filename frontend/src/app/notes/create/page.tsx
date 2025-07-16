@@ -1,5 +1,5 @@
 "use client";
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { useUser } from "../../UserContext";
 import { useRouter } from "next/navigation";
 
@@ -11,6 +11,25 @@ export default function CreateNotePage() {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
   const [success, setSuccess] = useState("");
+  const [permitted, setPermitted] = useState<string[]>([]);
+  const [allUsers, setAllUsers] = useState<{ id: string; username: string }[]>(
+    []
+  );
+  const [selectedUser, setSelectedUser] = useState("");
+
+  useEffect(() => {
+    // Fetch all users for sharing
+    fetch("http://localhost:4000/users")
+      .then((res) => res.json())
+      .then((data) => setAllUsers(data.users || []));
+  }, []);
+
+  useEffect(() => {
+    if (!loading && !user) {
+      router.replace("/login");
+    }
+  }, [user, loading, router]);
+  if (loading || !user) return null;
 
   const handleCreate = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -24,7 +43,11 @@ export default function CreateNotePage() {
           "Content-Type": "application/json",
           "x-user-id": user?.id || "",
         },
-        body: JSON.stringify({ content, public: isPublic }),
+        body: JSON.stringify({
+          content,
+          public: isPublic,
+          permitted: isPublic ? [] : permitted,
+        }),
       });
       if (!res.ok) {
         const data = await res.json();
@@ -61,6 +84,59 @@ export default function CreateNotePage() {
           />
           <label htmlFor="public">Public</label>
         </div>
+        {!isPublic && (
+          <div className="mb-2">
+            <label className="block mb-1 font-medium">Share with users:</label>
+            <div className="flex gap-2 items-center mb-2">
+              <select
+                value={selectedUser}
+                onChange={(e) => setSelectedUser(e.target.value)}
+                className="border rounded p-2"
+              >
+                <option value="">Select user to permit</option>
+                {allUsers
+                  .filter((u) => u.id !== user?.id && !permitted.includes(u.id))
+                  .map((u) => (
+                    <option key={u.id} value={u.id}>
+                      {u.username}
+                    </option>
+                  ))}
+              </select>
+              <button
+                type="button"
+                className="bg-green-500 text-white px-3 py-2 rounded"
+                disabled={!selectedUser}
+                onClick={() => {
+                  if (selectedUser && !permitted.includes(selectedUser)) {
+                    setPermitted((prev) => [...prev, selectedUser]);
+                    setSelectedUser("");
+                  }
+                }}
+              >
+                Add
+              </button>
+            </div>
+            <ul className="list-disc ml-6">
+              {permitted.map((uid) => {
+                const u = allUsers.find((u) => u.id === uid);
+                return (
+                  <li key={uid} className="flex items-center gap-2">
+                    {u ? u.username : uid}
+                    <button
+                      type="button"
+                      className="ml-2 text-red-500 hover:underline text-xs"
+                      onClick={() =>
+                        setPermitted((prev) => prev.filter((id) => id !== uid))
+                      }
+                    >
+                      Remove
+                    </button>
+                  </li>
+                );
+              })}
+            </ul>
+          </div>
+        )}
         <button
           type="submit"
           className="bg-blue-500 text-white px-4 py-2 rounded"

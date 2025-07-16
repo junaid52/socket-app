@@ -1,13 +1,13 @@
 const express = require('express');
 const http = require('http');
-const {Server} = require('socket.io');
-const {users, note} = require('./mockData');
+const { Server } = require('socket.io');
+const { users, note } = require('./mockData');
 const cors = require('cors');
 const db = require('./db');
 const userQueries = require('./queries/userQueries');
 const noteQueries = require('./queries/noteQueries');
 const permissionQueries = require('./queries/permissionQueries');
-const {v4: uuidv4} = require('uuid');
+const { v4: uuidv4 } = require('uuid');
 
 const app = express();
 app.use(
@@ -34,9 +34,9 @@ app.use((req, res, next) => {
 
 // GET /notes: fetch all notes user can access, with optional filters
 app.get('/notes', (req, res) => {
-  if (!req.user) return res.status(401).json({error: 'Not authenticated'});
+  if (!req.user) return res.status(401).json({ error: 'Not authenticated' });
   const userId = req.user.id;
-  const {public: publicFilter, owner: ownerFilter} = req.query;
+  const { public: publicFilter, owner: ownerFilter } = req.query;
   let sql = `SELECT * FROM notes WHERE (public = 1 OR owner = ? OR id IN (SELECT note_id FROM note_permissions WHERE user_id = ?))`;
   const params = [userId, userId];
   if (publicFilter !== undefined) {
@@ -48,43 +48,43 @@ app.get('/notes', (req, res) => {
     params.push(ownerFilter);
   }
   db.all(sql, params, (err, notes) => {
-    if (err) return res.status(500).json({error: 'DB error'});
+    if (err) return res.status(500).json({ error: 'DB error' });
     res.json(notes);
   });
 });
 
 // PUT /notes/:id: edit note with permission logic
 app.put('/notes/:id', (req, res) => {
-  if (!req.user) return res.status(401).json({error: 'Not authenticated'});
+  if (!req.user) return res.status(401).json({ error: 'Not authenticated' });
   const userId = req.user.id;
   const noteId = req.params.id;
-  const {content} = req.body;
+  const { content } = req.body;
   noteQueries.getNoteById(noteId, (err, note) => {
-    if (err || !note) return res.status(404).json({error: 'Note not found'});
+    if (err || !note) return res.status(404).json({ error: 'Note not found' });
     if (note.public) {
       // Public: allow edit
       noteQueries.updateNote(noteId, content, 1, (err) => {
-        if (err) return res.status(500).json({error: 'Update failed'});
-        res.json({success: true});
+        if (err) return res.status(500).json({ error: 'Update failed' });
+        res.json({ success: true });
       });
     } else if (note.owner === userId) {
       // Owner: allow edit
       noteQueries.updateNote(noteId, content, 0, (err) => {
-        if (err) return res.status(500).json({error: 'Update failed'});
-        res.json({success: true});
+        if (err) return res.status(500).json({ error: 'Update failed' });
+        res.json({ success: true });
       });
     } else {
       // Check permissions
       permissionQueries.getPermittedUsersForNote(noteId, (err, users) => {
-        if (err) return res.status(500).json({error: 'DB error'});
+        if (err) return res.status(500).json({ error: 'DB error' });
         const permitted = users.map((u) => u.user_id);
         if (permitted.includes(userId)) {
           noteQueries.updateNote(noteId, content, 0, (err) => {
-            if (err) return res.status(500).json({error: 'Update failed'});
-            res.json({success: true});
+            if (err) return res.status(500).json({ error: 'Update failed' });
+            res.json({ success: true });
           });
         } else {
-          res.status(403).json({error: 'No permission to edit this note'});
+          res.status(403).json({ error: 'No permission to edit this note' });
         }
       });
     }
@@ -93,40 +93,82 @@ app.put('/notes/:id', (req, res) => {
 
 // POST /notes: create a new note
 app.post('/notes', (req, res) => {
-  if (!req.user) return res.status(401).json({error: 'Not authenticated'});
+  if (!req.user) return res.status(401).json({ error: 'Not authenticated' });
   const userId = req.user.id;
-  const {content, public: isPublic} = req.body;
+  const { content, public: isPublic, permitted } = req.body;
   const noteId = uuidv4();
-  noteQueries.createNote(noteId, userId, content, isPublic ? 1 : 0, (err) => {
-    if (err) return res.status(500).json({error: 'Failed to create note'});
-    res.json({success: true, id: noteId});
+  notesDb = require('./queries/noteQueries');
+  permDb = require('./queries/permissionQueries');
+  notesDb.createNote(noteId, userId, content, isPublic ? 1 : 0, (err) => {
+    if (err) return res.status(500).json({ error: 'Failed to create note' });
+    // Add permitted users if provided (for private notes)
+    if (Array.isArray(permitted) && permitted.length > 0 && !isPublic) {
+      let added = 0;
+      permitted.forEach(uid => {
+        if (uid !== userId) {
+          permDb.addPermission(noteId, uid, (err) => {
+            added++;
+            if (added === permitted.length) {
+              sendNoteCreated();
+            }
+          });
+        } else {
+          added++;
+          if (added === permitted.length) {
+            sendNoteCreated();
+          }
+        }
+      });
+    } else {
+      sendNoteCreated();
+    }
+    function sendNoteCreated() {
+      // Fetch the created note for emitting
+      notesDb.getNoteById(noteId, (err, note) => {
+        if (err || !note) return;
+        permDb.getPermittedUsersForNote(noteId, (err, users) => {
+          const permittedArr = users ? users.map(u => u.user_id) : [];
+          note.permitted = permittedArr;
+          if (isPublic) {
+            io.emit('note-created', { note });
+          } else {
+            // Emit only to owner and permitted users
+            const targets = new Set([userId, ...permittedArr]);
+            targets.forEach(uid => {
+              io.to(uid).emit('note-created', { note });
+            });
+          }
+        });
+      });
+      res.json({ success: true, id: noteId });
+    }
   });
 });
 
 // POST /notes/:id/share: add a user to a note's permitted list (only owner can share)
 app.post('/notes/:id/share', (req, res) => {
-  if (!req.user) return res.status(401).json({error: 'Not authenticated'});
+  if (!req.user) return res.status(401).json({ error: 'Not authenticated' });
   const userId = req.user.id;
   const noteId = req.params.id;
-  const {targetUserId} = req.body;
+  const { targetUserId } = req.body;
   noteQueries.getNoteById(noteId, (err, note) => {
-    if (err || !note) return res.status(404).json({error: 'Note not found'});
+    if (err || !note) return res.status(404).json({ error: 'Note not found' });
     if (note.owner !== userId)
-      return res.status(403).json({error: 'Only owner can share this note'});
+      return res.status(403).json({ error: 'Only owner can share this note' });
     permissionQueries.addPermission(noteId, targetUserId, (err) => {
-      if (err) return res.status(500).json({error: 'Failed to add permission'});
-      res.json({success: true});
+      if (err) return res.status(500).json({ error: 'Failed to add permission' });
+      res.json({ success: true });
     });
   });
 });
 
 // GET /notes/:id/permitted: list users who have access to the note (with usernames)
 app.get('/notes/:id/permitted', (req, res) => {
-  if (!req.user) return res.status(401).json({error: 'Not authenticated'});
+  if (!req.user) return res.status(401).json({ error: 'Not authenticated' });
   const userId = req.user.id;
   const noteId = req.params.id;
   noteQueries.getNoteById(noteId, (err, note) => {
-    if (err || !note) return res.status(404).json({error: 'Note not found'});
+    if (err || !note) return res.status(404).json({ error: 'Note not found' });
     const sendUsers = (userIds) => {
       // Fetch usernames for all userIds
       const userLookups = userIds.map(
@@ -139,30 +181,30 @@ app.get('/notes/:id/permitted', (req, res) => {
                   username: user.username,
                   owner: id === note.owner,
                 });
-              else resolve({id, username: id, owner: id === note.owner});
+              else resolve({ id, username: id, owner: id === note.owner });
             });
           })
       );
       Promise.all(userLookups).then((users) => {
-        res.json({users});
+        res.json({ users });
       });
     };
     if (note.public || note.owner === userId) {
       permissionQueries.getPermittedUsersForNote(noteId, (err, users) => {
-        if (err) return res.status(500).json({error: 'DB error'});
+        if (err) return res.status(500).json({ error: 'DB error' });
         const permitted = users.map((u) => u.user_id);
         sendUsers([note.owner, ...permitted]);
       });
     } else {
       permissionQueries.getPermittedUsersForNote(noteId, (err, users) => {
-        if (err) return res.status(500).json({error: 'DB error'});
+        if (err) return res.status(500).json({ error: 'DB error' });
         const permitted = users.map((u) => u.user_id);
         if (permitted.includes(userId)) {
           sendUsers([note.owner, ...permitted]);
         } else {
           res
             .status(403)
-            .json({error: 'No permission to view permitted users'});
+            .json({ error: 'No permission to view permitted users' });
         }
       });
     }
@@ -171,20 +213,20 @@ app.get('/notes/:id/permitted', (req, res) => {
 
 // DELETE /notes/:id/permissions/:userId: remove a permitted user from a note (owner only)
 app.delete('/notes/:id/permissions/:userId', (req, res) => {
-  if (!req.user) return res.status(401).json({error: 'Not authenticated'});
+  if (!req.user) return res.status(401).json({ error: 'Not authenticated' });
   const userId = req.user.id;
   const noteId = req.params.id;
   const targetUserId = req.params.userId;
   noteQueries.getNoteById(noteId, (err, note) => {
-    if (err || !note) return res.status(404).json({error: 'Note not found'});
+    if (err || !note) return res.status(404).json({ error: 'Note not found' });
     if (note.owner !== userId)
-      return res.status(403).json({error: 'Only owner can remove permissions'});
+      return res.status(403).json({ error: 'Only owner can remove permissions' });
     if (targetUserId === userId)
-      return res.status(400).json({error: 'Owner cannot remove themselves'});
+      return res.status(400).json({ error: 'Owner cannot remove themselves' });
     permissionQueries.removePermission(noteId, targetUserId, (err) => {
       if (err)
-        return res.status(500).json({error: 'Failed to remove permission'});
-      res.json({success: true});
+        return res.status(500).json({ error: 'Failed to remove permission' });
+      res.json({ success: true });
     });
   });
 });
@@ -193,8 +235,8 @@ app.delete('/notes/:id/permissions/:userId', (req, res) => {
 app.get('/users', (req, res) => {
   const db = require('./db');
   db.all('SELECT id, username FROM users', [], (err, rows) => {
-    if (err) return res.status(500).json({error: 'DB error'});
-    res.json({users: rows});
+    if (err) return res.status(500).json({ error: 'DB error' });
+    res.json({ users: rows });
   });
 });
 
@@ -212,16 +254,16 @@ let connectedUsers = {}; // socket.id -> { id, username }
 
 // Simple login endpoint
 app.post('/login', (req, res) => {
-  const {username, password} = req.body;
+  const { username, password } = req.body;
   const user = users.find(
     (u) => u.username === username && u.password === password
   );
   if (user) {
-    res.json({success: true, user: {id: user.id, username: user.username}});
+    res.json({ success: true, user: { id: user.id, username: user.username } });
   } else {
     res
       .status(401)
-      .json({success: false, message: 'Invalid username or password'});
+      .json({ success: false, message: 'Invalid username or password' });
   }
 });
 
@@ -234,11 +276,13 @@ app.get('/', (req, res) => {
 const noteRoomUsers = {}; // noteId -> { [socket.id]: { id, username } }
 
 io.on('connection', (socket) => {
-  const {id: userId} = socket.handshake.auth;
+  const { id: userId } = socket.handshake.auth;
   if (!userId) {
     socket.disconnect();
     return;
   }
+  // Join a room named after the user ID for private note events
+  socket.join(userId);
   const userQueries = require('./queries/userQueries');
   const db = require('./db');
   userQueries.getUserById(userId, (err, user) => {
@@ -272,7 +316,7 @@ io.on('connection', (socket) => {
         const firstNoteId = notes.length > 0 ? notes[0].id : null;
         if (firstNoteId) {
           const usersInRoom = Object.values(noteRoomUsers[firstNoteId]);
-          socket.emit('init', {users: usersInRoom});
+          socket.emit('init', { users: usersInRoom });
           socket.to(firstNoteId).emit('user-joined', usersInRoom);
         }
       }
@@ -280,7 +324,7 @@ io.on('connection', (socket) => {
   });
 
   // Handle note edits
-  socket.on('edit-note', ({noteId, content}) => {
+  socket.on('edit-note', ({ noteId, content }) => {
     const noteQueries = require('./queries/noteQueries');
     const permissionQueries = require('./queries/permissionQueries');
     noteQueries.getNoteById(noteId, (err, note) => {
@@ -288,13 +332,13 @@ io.on('connection', (socket) => {
       if (note.public) {
         noteQueries.updateNote(noteId, content, 1, (err) => {
           if (!err) {
-            io.to(noteId).emit('note-updated', {noteId, content});
+            io.to(noteId).emit('note-updated', { noteId, content });
           }
         });
       } else if (note.owner === userId) {
         noteQueries.updateNote(noteId, content, 0, (err) => {
           if (!err) {
-            io.to(noteId).emit('note-updated', {noteId, content});
+            io.to(noteId).emit('note-updated', { noteId, content });
           }
         });
       } else {
@@ -304,7 +348,7 @@ io.on('connection', (socket) => {
           if (permitted.includes(userId)) {
             noteQueries.updateNote(noteId, content, 0, (err) => {
               if (!err) {
-                io.to(noteId).emit('note-updated', {noteId, content});
+                io.to(noteId).emit('note-updated', { noteId, content });
               }
             });
           }
@@ -335,7 +379,7 @@ io.on('connection', (socket) => {
           editing: isEditing,
         });
       if (typeof content === 'string') {
-        socket.to(noteId).emit('content-update', {noteId, content});
+        socket.to(noteId).emit('content-update', { noteId, content });
       }
     });
   });

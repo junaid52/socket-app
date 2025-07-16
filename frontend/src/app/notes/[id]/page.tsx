@@ -130,6 +130,12 @@ export default function NoteViewPage() {
       socketRef.current = null;
     };
   }, [user, noteId, isEditingLocally]);
+  useEffect(() => {
+    if (!loading && !user) {
+      router.replace("/login");
+    }
+  }, [user, loading, router]);
+  if (loading || !user) return null;
   console.log(permittedUsers.some((u) => u.id === user?.id));
   console.log(note?.owner === user?.id);
   console.log(note?.public);

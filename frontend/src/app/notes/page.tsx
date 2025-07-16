@@ -1,7 +1,7 @@
-'use client';
-import {useEffect, useState} from 'react';
-import {useUser} from '../UserContext';
-import {useRouter} from 'next/navigation';
+"use client";
+import { useEffect, useState, useRef } from "react";
+import { useUser } from "../UserContext";
+import { useRouter } from "next/navigation";
 import {
   Table,
   TableHeader,
@@ -10,7 +10,8 @@ import {
   TableHead,
   TableCell,
   TableCaption,
-} from '../../components/ui/table';
+} from "../../components/ui/table";
+import { io, Socket } from "socket.io-client";
 
 interface Note {
   id: string;
@@ -20,36 +21,44 @@ interface Note {
 }
 
 export default function NotesDashboard() {
-  const {user} = useUser();
+  const { user } = useUser();
   const router = useRouter();
   const [notes, setNotes] = useState<Note[]>([]);
-  const [content, setContent] = useState('');
+  const [content, setContent] = useState("");
   const [isPublic, setIsPublic] = useState(false);
   const [loading, setLoading] = useState(false);
-  const [error, setError] = useState('');
-  const [allUsers, setAllUsers] = useState<{id: string; username: string}[]>(
+  const [error, setError] = useState("");
+  const [allUsers, setAllUsers] = useState<{ id: string; username: string }[]>(
     []
   );
-  const [filter, setFilter] = useState('all');
+  const [filter, setFilter] = useState("all");
+  const socketRef = useRef<Socket | null>(null);
+
+  useEffect(() => {
+    if (!loading && !user) {
+      router.replace("/login");
+    }
+  }, [user, loading, router]);
+  if (loading || !user) return null;
 
   useEffect(() => {
     if (!user) return;
-    let url = 'http://localhost:4000/notes';
+    let url = "http://localhost:4000/notes";
     let params = [];
-    if (filter === 'my') {
+    if (filter === "my") {
       params.push(`owner=${user.id}`);
-    } else if (filter === 'public') {
-      params.push('public=1');
-    } else if (filter === 'private-permitted') {
+    } else if (filter === "public") {
+      params.push("public=1");
+    } else if (filter === "private-permitted") {
       // We'll fetch all notes, then filter client-side for private notes where user is permitted but not owner
     }
-    if (params.length) url += `?${params.join('&')}`;
+    if (params.length) url += `?${params.join("&")}`;
     fetch(url, {
-      headers: {'x-user-id': user.id},
+      headers: { "x-user-id": user.id },
     })
       .then((res) => res.json())
       .then((data) => {
-        if (filter === 'private-permitted') {
+        if (filter === "private-permitted") {
           // Only show private notes where user is permitted but not owner
           setNotes(
             data.filter(
@@ -61,40 +70,60 @@ export default function NotesDashboard() {
         }
       });
     // Fetch all users for owner username mapping
-    fetch('http://localhost:4000/users')
+    fetch("http://localhost:4000/users")
       .then((res) => res.json())
       .then((data) => setAllUsers(data.users || []));
+    // Real-time note creation
+    const socket = io("http://localhost:4000", {
+      auth: { id: user.id },
+      transports: ["websocket"],
+    });
+    socketRef.current = socket;
+    socket.on("note-created", ({ note }) => {
+      // Only add if user can access (public, owner, or permitted)
+      if (
+        note.public === 1 ||
+        note.owner === user.id ||
+        (note.permitted && note.permitted.includes(user.id))
+      ) {
+        setNotes((prev) => [note, ...prev.filter((n) => n.id !== note.id)]);
+      }
+    });
+    return () => {
+      socket.disconnect();
+      socketRef.current = null;
+    };
   }, [user, filter]);
 
   const handleCreate = async (e: React.FormEvent) => {
     e.preventDefault();
     setLoading(true);
-    setError('');
+    setError("");
     try {
-      const res = await fetch('http://localhost:4000/notes', {
-        method: 'POST',
+      const res = await fetch("http://localhost:4000/notes", {
+        method: "POST",
         headers: {
-          'Content-Type': 'application/json',
-          'x-user-id': user?.id || '',
+          "Content-Type": "application/json",
+          "x-user-id": user?.id || "",
         },
-        body: JSON.stringify({content, public: isPublic}),
+        body: JSON.stringify({ content, public: isPublic }),
       });
       if (!res.ok) {
         const data = await res.json();
-        setError(data.error || 'Failed to create note');
+        setError(data.error || "Failed to create note");
         setLoading(false);
         return;
       }
-      setContent('');
+      setContent("");
       setIsPublic(false);
       // Refresh notes
-      fetch('http://localhost:4000/notes', {
-        headers: {'x-user-id': user?.id || ''},
+      fetch("http://localhost:4000/notes", {
+        headers: { "x-user-id": user?.id || "" },
       })
         .then((res) => res.json())
         .then(setNotes);
     } catch (err) {
-      setError('Network error');
+      setError("Network error");
     }
     setLoading(false);
   };
@@ -109,7 +138,7 @@ export default function NotesDashboard() {
         <h1 className="text-2xl font-bold">Notes Dashboard</h1>
         <button
           className="bg-green-500 text-white px-4 py-2 rounded"
-          onClick={() => router.push('/notes/create')}
+          onClick={() => router.push("/notes/create")}
         >
           + Create Note
         </button>
@@ -150,13 +179,13 @@ export default function NotesDashboard() {
               >
                 <TableCell>
                   {note.content.slice(0, 30)}
-                  {note.content.length > 30 ? '...' : ''}
+                  {note.content.length > 30 ? "..." : ""}
                 </TableCell>
                 <TableCell>
                   {ownerUser ? ownerUser.username : note.owner}
-                  {user && note.owner === user.id ? ' (You)' : ''}
+                  {user && note.owner === user.id ? " (You)" : ""}
                 </TableCell>
-                <TableCell>{note.public ? 'Public' : 'Private'}</TableCell>
+                <TableCell>{note.public ? "Public" : "Private"}</TableCell>
                 <TableCell>
                   <span className="text-blue-500">View/Edit</span>
                 </TableCell>
