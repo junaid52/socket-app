@@ -21,13 +21,10 @@ interface Note {
 }
 
 export default function NotesDashboard() {
-  const { user } = useUser();
+  const { user, loading } = useUser();
   const router = useRouter();
   const [notes, setNotes] = useState<Note[]>([]);
-  const [content, setContent] = useState("");
-  const [isPublic, setIsPublic] = useState(false);
-  const [loading, setLoading] = useState(false);
-  const [error, setError] = useState("");
+
   const [allUsers, setAllUsers] = useState<{ id: string; username: string }[]>(
     []
   );
@@ -35,14 +32,13 @@ export default function NotesDashboard() {
   const socketRef = useRef<Socket | null>(null);
 
   useEffect(() => {
-    if (!loading && !user) {
-      router.replace("/login");
+    if (loading) {
+      return;
     }
-  }, [user, loading, router]);
-  if (loading || !user) return null;
-
-  useEffect(() => {
-    if (!user) return;
+    if (!user) {
+      router.replace("/login");
+      return;
+    }
     let url = "http://localhost:4000/notes";
     let params = [];
     if (filter === "my") {
@@ -53,6 +49,7 @@ export default function NotesDashboard() {
       // We'll fetch all notes, then filter client-side for private notes where user is permitted but not owner
     }
     if (params.length) url += `?${params.join("&")}`;
+
     fetch(url, {
       headers: { "x-user-id": user.id },
     })
@@ -73,6 +70,7 @@ export default function NotesDashboard() {
     fetch("http://localhost:4000/users")
       .then((res) => res.json())
       .then((data) => setAllUsers(data.users || []));
+
     // Real-time note creation
     const socket = io("http://localhost:4000", {
       auth: { id: user.id },
@@ -95,43 +93,13 @@ export default function NotesDashboard() {
     };
   }, [user, filter]);
 
-  const handleCreate = async (e: React.FormEvent) => {
-    e.preventDefault();
-    setLoading(true);
-    setError("");
-    try {
-      const res = await fetch("http://localhost:4000/notes", {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          "x-user-id": user?.id || "",
-        },
-        body: JSON.stringify({ content, public: isPublic }),
-      });
-      if (!res.ok) {
-        const data = await res.json();
-        setError(data.error || "Failed to create note");
-        setLoading(false);
-        return;
-      }
-      setContent("");
-      setIsPublic(false);
-      // Refresh notes
-      fetch("http://localhost:4000/notes", {
-        headers: { "x-user-id": user?.id || "" },
-      })
-        .then((res) => res.json())
-        .then(setNotes);
-    } catch (err) {
-      setError("Network error");
-    }
-    setLoading(false);
-  };
-
   const handleSelect = (noteId: string) => {
     router.push(`/notes/${noteId}`);
   };
-
+  if (loading) {
+    return null;
+  }
+  if (!user) return null;
   return (
     <div className="max-w-4xl mx-auto p-4">
       <div className="flex justify-between items-center mb-4">
